@@ -8,6 +8,25 @@ using ParserDictionary = System.Collections.Generic.Dictionary<System.Type, Syst
 
 namespace CSV
 {
+    /// <inheritdoc />
+    public sealed class ParseException : Exception
+    {
+        /// <inheritdoc />
+        public ParseException()
+        {
+        }
+
+        /// <inheritdoc />
+        public ParseException(string message) : base(message)
+        {
+        }
+
+        /// <inheritdoc />
+        public ParseException(string message, Exception inner) : base(message, inner)
+        {
+        }
+    }
+
     /// <summary>
     /// This attribute may be applied to any property of a class or struct to indicate that the custom name should
     /// be matched against the headers of the CSV file instead of the name of the attribute
@@ -23,7 +42,7 @@ namespace CSV
         /// The name of the property.
         /// </summary>
         public string Name { get; }
-        
+
         /// <summary>
         /// Initializes a new instance of <see cref="PropertyNameAttribute"/> with the specified property name.
         /// </summary>
@@ -52,11 +71,22 @@ namespace CSV
         public static Converter<string, object> Get(Type t) => Dict[t];
 
         /// <summary>
+        /// A compile-time variant of <see cref="Get"/>. Should be preferred when possible.
+        /// </summary>
+        /// <typeparam name="T">the Type to find the converter for</typeparam>
+        /// <returns>The <c>Converter</c> parser function associated with <c>T</c></returns>
+        public static Converter<string, T> Get<T>() => Dict[typeof(T)] as Converter<string, T>;
+
+        /// <summary>
         /// Globally registers a parser for <typeparamref name="T"/>, overriding any parser which may exist for the same type
         /// </summary>
         /// <param name="parser">a <c>Converter</c> from a string to an arbitrary type <c>T</c></param>
         /// <typeparam name="T">a type to make available for parsing into</typeparam>
-        public static void RegisterParser<T>(Converter<string, object> parser) => Dict[typeof(T)] = parser;
+        public static void RegisterParser<T>(Converter<string, T> parser)
+        {
+            object CovarianceCaster(string s) => parser(s);
+            Dict[typeof(T)] = CovarianceCaster;
+        }
     }
 
     /// <summary>
@@ -65,7 +95,7 @@ namespace CSV
     ///
     /// <para>
     /// By default, CSV.Parser supports parsing <c>int, double, string, boolean</c> types.
-    /// Parsers for other types may be added via <see cref="Parsers.RegisterParser{T}(Converter{string,object})"/>.
+    /// Parsers for other types may be added via <see cref="Parsers.RegisterParser{T}(Converter{string,T})"/>.
     /// </para>
     ///
     /// <example>
@@ -86,7 +116,7 @@ namespace CSV
     /// each line can be parsed into a <c>Foo</c> object using
     /// <code>
     /// var csv = new CSV.Parser(reader)
-    /// CSV.Parsers.RegisterParser&lt;Foo&gt;(s => float.Parse(s))
+    /// CSV.Parsers.RegisterParser(float.Parse)
     /// foreach (var foo in csv) Console.WriteLine(foo);
     /// </code>
     /// </example>
@@ -136,8 +166,19 @@ namespace CSV
                 var idx = _headers.IndexOf(name);
                 if (idx >= split.Length) continue;
 
-                var parsed = idx == -1 ? null : Parsers.Get(prop.PropertyType).Invoke(split[idx]);
-                prop.SetValue(row, parsed);
+                try
+                {
+                    var parsed = idx == -1 ? null : Parsers.Get(prop.PropertyType).Invoke(split[idx]);
+                    prop.SetValue(row, parsed);
+                }
+                catch (KeyNotFoundException)
+                {
+                    throw new ParseException($"There is no registered parser for {prop.PropertyType}");
+                }
+                catch (Exception e)
+                {
+                    throw new ParseException($"The parser for {prop.PropertyType} failed", e);
+                }
             }
 
             return (TRow) row;
