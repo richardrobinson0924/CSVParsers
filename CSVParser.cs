@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
-using ParserDictionary = System.Collections.Generic.Dictionary<System.Type, System.Converter<string, object>>;
 
 namespace CSV
 {
@@ -12,12 +11,7 @@ namespace CSV
     public sealed class ParseException : Exception
     {
         /// <inheritdoc />
-        public ParseException()
-        {
-        }
-
-        /// <inheritdoc />
-        public ParseException(string message) : base(message)
+        public ParseException(string message = "") : base(message)
         {
         }
 
@@ -55,30 +49,11 @@ namespace CSV
     /// </summary>
     public readonly struct Parsers
     {
-        private static readonly ParserDictionary Dict = new ParserDictionary
-        {
-            {typeof(int), s => int.Parse(s)},
-            {typeof(double), s => double.Parse(s)},
-            {typeof(string), s => s},
-            {typeof(bool), s => bool.Parse(s)}
-        };
+        internal static readonly Dictionary<Type, Converter<string, object>> Dict = 
+            new Dictionary<Type, Converter<string, object>>();
 
         /// <summary>
-        /// Returns the <see cref="Converter{TInput,TOutput}"/> used to parse strings to objects of the specified type
-        /// </summary>
-        /// <param name="t">the Type to find the converter for</param>
-        /// <returns>The <c>Converter</c> parser function associated with <c>t</c></returns>
-        public static Converter<string, object> Get(Type t) => Dict[t];
-
-        /// <summary>
-        /// A compile-time variant of <see cref="Get"/>. Should be preferred when possible.
-        /// </summary>
-        /// <typeparam name="T">the Type to find the converter for</typeparam>
-        /// <returns>The <c>Converter</c> parser function associated with <c>T</c></returns>
-        public static Converter<string, T> Get<T>() => Dict[typeof(T)] as Converter<string, T>;
-
-        /// <summary>
-        /// Globally registers a parser for <typeparamref name="T"/>, overriding any parser which may exist for the same type
+        /// Globally registers a parser for <typeparamref name="T"/>, overriding any parser which may exist for the type
         /// </summary>
         /// <param name="parser">a <c>Converter</c> from a string to an arbitrary type <c>T</c></param>
         /// <typeparam name="T">a type to make available for parsing into</typeparam>
@@ -94,7 +69,7 @@ namespace CSV
     /// </summary>
     ///
     /// <para>
-    /// By default, CSV.Parser supports parsing <c>int, double, string, boolean</c> types.
+    /// By default, CSV.Parser supports parsing all types supported by <see cref="Convert.ChangeType(object?,Type)"/>
     /// Parsers for other types may be added via <see cref="Parsers.RegisterParser{T}(Converter{string,T})"/>.
     /// </para>
     ///
@@ -116,7 +91,6 @@ namespace CSV
     /// each line can be parsed into a <c>Foo</c> object using
     /// <code>
     /// var csv = new CSV.Parser(reader)
-    /// CSV.Parsers.RegisterParser(float.Parse)
     /// foreach (var foo in csv) Console.WriteLine(foo);
     /// </code>
     /// </example>
@@ -137,7 +111,8 @@ namespace CSV
         /// <summary>
         /// Creates a new CSV.Parser instance from the specified <c>reader</c> whose lines may be parsed into <c>TRow</c> instances
         /// </summary>
-        /// <param name="reader">a <c>TextReader</c> containing N lines of text, each line containing M data fields separated by a <c>delimiter</c></param>
+        /// <param name="reader">a <c>TextReader</c> containing N lines of text, each line containing M data fields
+        /// separated by a <c>delimiter</c></param>
         /// <param name="delimiter">the delimiter to use</param>
         public Parser(TextReader reader, string delimiter = ",")
         {
@@ -150,6 +125,8 @@ namespace CSV
         /// Parses the next line of the associated <see cref="TextReader"/> into a <c>TRow</c> object
         /// </summary>
         /// <returns>The parsed TRow object</returns>
+        /// <exception cref="ParseException">There is no valid parser for one of the types of the fields of
+        /// <typeparamref name="TRow"/>, or a parser threw an Exception while parsing</exception>
         public TRow ReadLine()
         {
             var line = _reader.ReadLine();
@@ -166,22 +143,29 @@ namespace CSV
                 var idx = _headers.IndexOf(name);
                 if (idx >= split.Length) continue;
 
-                try
-                {
-                    var parsed = idx == -1 ? null : Parsers.Get(prop.PropertyType).Invoke(split[idx]);
-                    prop.SetValue(row, parsed);
-                }
-                catch (KeyNotFoundException)
-                {
-                    throw new ParseException($"There is no registered parser for {prop.PropertyType}");
-                }
-                catch (Exception e)
-                {
-                    throw new ParseException($"The parser for {prop.PropertyType} failed", e);
-                }
+                var parsed = idx == -1 ? null : TryParse(split[idx].Trim(), prop.PropertyType);
+                prop.SetValue(row, parsed);
             }
 
             return (TRow) row;
+        }
+
+        private static object TryParse(string s, Type t)
+        {
+            var hasParser = Parsers.Dict.ContainsKey(t);
+            try
+            {
+                return hasParser ? Parsers.Dict[t].Invoke(s) : Convert.ChangeType(s, t);
+            }
+            catch (Exception e)
+            {
+                if (hasParser)
+                {
+                    throw new ParseException($"The parser for {t} failed", e);
+                }
+
+                throw new ParseException($"There is no registered parser for {t}");
+            }
         }
 
         /// <summary>
